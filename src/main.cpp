@@ -8,16 +8,38 @@
 // IMPORTANT: Confirm pinout, supply voltage and ADC-safe output of each Hall sensor.
 // 49E-family parts from different vendors are not guaranteed to be interchangeable.
 
-// -----------------------------------------------------------------------------
-// Hardware: default pins are ESP32-S3 ADC1-capable GPIOs. Change to match wiring.
-// -----------------------------------------------------------------------------
+// ============================================================================
+// FlowerV2 USER CONFIGURATION / 用户配置区：引脚、阈值和可调参数
+// ============================================================================
+// 全部 GPIO 和检测阈值均定义在本文件开头；通常只需修改下方常量。
+//
+// 可选 ADC 引脚（ESP32-S3 芯片映射）：
+//   GPIO1=ADC1_CH0     GPIO2=ADC1_CH1     GPIO3=ADC1_CH2 (*)
+//   GPIO4=ADC1_CH3     GPIO5=ADC1_CH4     GPIO6=ADC1_CH5
+//   GPIO7=ADC1_CH6     GPIO8=ADC1_CH7     GPIO9=ADC1_CH8
+//   GPIO10=ADC1_CH9
+// 推荐：GPIO1、GPIO2、GPIO4～GPIO10，均为 ADC1 输入。
+// (*) GPIO3 是启动配置 (strapping) 引脚，虽然支持 ADC，但不推荐。
+// GPIO11～GPIO20 属于 ADC2，需先检查 Wi-Fi/板载外设等功能占用。
+// GPIO19/20 同时为原生 USB D-/D+，使用 USB 串口时不要占用。
+// GPIO0/45/46 是启动配置引脚，不是适用的模拟输入。
+// 具体开发板可能没有引出上述所有引脚，也可能连接板载设备。
+// 四个模拟信号必须占用不同 GPIO。更换接线时修改 PIN_* 常量即可。
+//
+// 49E 三脚霍尔的供电范围与 VCC/GND/OUT 引脚顺序须核对具体型号。
+// ESP32-S3 ADC 不允许直接接入 5V 模拟输出；必要时先分压/保护。
+// ADC 的可测量电压范围受衰减配置限制，接近满量程时可能削顶。
+// 本项目阈值尚未标定，所有 ON/OFF 阈值都必须根据实物测试调整。
+// ============================================================================
+
+// 1. GPIO DEFINITIONS / 引脚定义 ---------------------------------------------
 static constexpr uint8_t PIN_SEED     = 4;  // ADC1_CH3
 static constexpr uint8_t PIN_KETTLE   = 5;  // ADC1_CH4
 static constexpr uint8_t PIN_WINDMILL = 6;  // ADC1_CH5
 static constexpr uint8_t PIN_KNOB     = 7;  // ADC1_CH6
 
 // -----------------------------------------------------------------------------
-// Communication and sampling (FlowerV1-compatible framing)
+// 2. COMMUNICATION, ADC AND FILTER SETTINGS / 串口、ADC 与滤波
 // -----------------------------------------------------------------------------
 static constexpr uint32_t SERIAL_BAUD               = 115200;
 static constexpr uint32_t SENSOR_SAMPLE_INTERVAL_MS = 20;    // 50 Hz
@@ -25,37 +47,61 @@ static constexpr uint32_t OUTPUT_INTERVAL_MS        = 50;    // 20 Hz
 static constexpr uint32_t WINDMILL_SAMPLE_US        = 2000;  // nominal 500 Hz
 static constexpr float    SENSOR_FILTER_ALPHA       = 0.20f; // FlowerV1 IIR
 static constexpr float    WINDMILL_FILTER_ALPHA     = 0.35f;
+static constexpr uint8_t  ADC_RESOLUTION_BITS        = 12;
+static constexpr auto     ADC_INPUT_ATTENUATION      = ADC_11db;
+static constexpr uint32_t SERIAL_STARTUP_DELAY_MS   = 500;
+static constexpr uint32_t MAIN_LOOP_YIELD_MS        = 1;
 
-// Initial thresholds: EXAMPLES ONLY. Tune these with the actual magnets/sensors.
-// Percent is relative to each Hall sensor's startup baseline (same as FlowerV1).
+// 3. SEED/KETTLE SWITCH THRESHOLDS / 种子、水壶触发与释放阈值（百分比）
+// Percentage change relative to calibrated baseline. ON must be > OFF.
 static constexpr float SEED_ON_PERCENT    = 5.0f;
 static constexpr float SEED_OFF_PERCENT   = 3.0f;
 static constexpr float KETTLE_ON_PERCENT  = 5.0f;
 static constexpr float KETTLE_OFF_PERCENT = 3.0f;
 
-// Windmill: assume one positive magnetic peak per magnet in the wheel.
-// Use -1 if the selected magnet polarity gives negative peaks.
-// Magnet count MUST equal the number of reliably counted pulses per revolution.
+// 4. WINDMILL PARAMETERS AND THRESHOLDS / 风车检测阈值与转速配置
+// 默认每颗磁铁形成一个正磁场峰；反向峰将 POLARITY 设为 -1。
+// PULSES_PER_REV 必须等于每转实际识别到的有效磁峰数量。
 static constexpr uint8_t WINDMILL_PULSES_PER_REV = 8; // tentative 8-magnet design
 static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
 static constexpr float   WINDMILL_ON_COUNTS      = 65.0f; // ADC counts
 static constexpr float   WINDMILL_OFF_COUNTS     = 30.0f;
 static constexpr float   WINDMILL_BASELINE_ALPHA = 0.002f; // slow moving reference
 static constexpr float   RPM_FILTER_ALPHA        = 0.35f;
+static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 2.5f;
 static constexpr uint32_t WINDMILL_REFRACTORY_US     = 8000;
 static constexpr uint32_t WINDMILL_INITIAL_TIMEOUT_US = 8000000;
 static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 1500000;
 static constexpr uint32_t WINDMILL_MAX_TIMEOUT_US     = 20000000;
 
-// Knob: analog potentiometer mapped to three discrete positions 0/1/2.
-// Tune ADC endpoints when the real potentiometer is connected.
+// 5. KNOB THRESHOLDS / 电位器 0/1/2 三档的量程与滞回
+// 默认对 ADC 有效量程三等分，需根据实际电位器端点调整。
 static constexpr int KNOB_ADC_MIN = 0;
 static constexpr int KNOB_ADC_MAX = 4095;
 static constexpr int KNOB_HYSTERESIS_COUNTS = 50;
 
-// FlowerV1-style startup calibration and ASCII 'c'/'C' recalibration.
+// 6. CALIBRATION / 校准参数（FlowerV1 风格）
 static constexpr uint16_t CALIBRATION_SAMPLES = 200;
 static constexpr uint32_t CALIBRATION_INTERVAL_MS = 10;
+static constexpr uint32_t CALIBRATION_SETTLE_DELAY_MS = 1000;
+static constexpr uint16_t CALIBRATION_LED_TOGGLE_SAMPLES = 25;
+static constexpr float HALL_ZERO_MIN_COUNTS = 1.0f;
+static constexpr uint8_t STATUS_LED_BRIGHTNESS = 24;
+
+// ============================================================================
+// END OF USER CONFIGURATION / 以下为处理逻辑，通常无需修改
+// ============================================================================
+
+constexpr bool isAdcCapableGpio(uint8_t pin) {
+  return pin >= 1 && pin <= 20;
+}
+static_assert(isAdcCapableGpio(PIN_SEED) && isAdcCapableGpio(PIN_KETTLE) &&
+              isAdcCapableGpio(PIN_WINDMILL) && isAdcCapableGpio(PIN_KNOB),
+              "Selected GPIO must support ESP32-S3 ADC");
+static_assert(PIN_SEED != PIN_KETTLE && PIN_SEED != PIN_WINDMILL &&
+              PIN_SEED != PIN_KNOB && PIN_KETTLE != PIN_WINDMILL &&
+              PIN_KETTLE != PIN_KNOB && PIN_WINDMILL != PIN_KNOB,
+              "Each ADC input must use a unique GPIO");
 
 static_assert(WINDMILL_PULSES_PER_REV > 0, "At least one pulse/revolution required");
 static_assert(SEED_OFF_PERCENT < SEED_ON_PERCENT, "Seed thresholds reversed");
@@ -73,8 +119,8 @@ struct HallInput {
   bool active = false;
 };
 
-static HallInput seed = {PIN_SEED};
-static HallInput kettle = {PIN_KETTLE};
+static HallInput seed{PIN_SEED};
+static HallInput kettle{PIN_KETTLE};
 
 struct WindmillInput {
   uint16_t raw = 0;
@@ -111,15 +157,15 @@ static void setRgb(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static void ledCalibrating(bool on) {
-  setRgb(0, 0, on ? 24 : 0);
+  setRgb(0, 0, on ? STATUS_LED_BRIGHTNESS : 0);
 }
 
 static void ledReady() {
-  setRgb(0, 24, 0);
+  setRgb(0, STATUS_LED_BRIGHTNESS, 0);
 }
 
 static void ledError() {
-  setRgb(24, 0, 0);
+  setRgb(STATUS_LED_BRIGHTNESS, 0, 0);
 }
 
 // -----------------------------------------------------------------------------
@@ -133,11 +179,11 @@ static bool calibrateSensors() {
   uint64_t wheelSum = 0;
 
   ledCalibrating(true);
-  delay(1000);  // Allow the user to move magnetic objects away.
+  delay(CALIBRATION_SETTLE_DELAY_MS);  // Allow the user to move magnetic objects away.
 
   for (uint16_t i = 0; i < CALIBRATION_SAMPLES; ++i) {
-    if ((i % 25) == 0) {
-      ledCalibrating(((i / 25) % 2) == 0);
+    if ((i % CALIBRATION_LED_TOGGLE_SAMPLES) == 0) {
+      ledCalibrating(((i / CALIBRATION_LED_TOGGLE_SAMPLES) % 2) == 0);
     }
     seedSum += (uint16_t)analogRead(PIN_SEED);
     kettleSum += (uint16_t)analogRead(PIN_KETTLE);
@@ -172,7 +218,8 @@ static bool calibrateSensors() {
   lastOutputMs = millis();
 
   // ADC readings near zero can indicate a disconnected sensor or incorrect wiring.
-  const bool ok = seed.zero > 1.0f && kettle.zero > 1.0f && wheelZero > 1.0f;
+  const bool ok = seed.zero > HALL_ZERO_MIN_COUNTS &&
+      kettle.zero > HALL_ZERO_MIN_COUNTS && wheelZero > HALL_ZERO_MIN_COUNTS;
   if (ok) ledReady();
   else ledError();
   return ok;
@@ -184,7 +231,7 @@ static bool calibrateSensors() {
 static void updateHall(HallInput &ch, float onPercent, float offPercent) {
   ch.raw = (uint16_t)analogRead(ch.pin);
   ch.filtered += SENSOR_FILTER_ALPHA * ((float)ch.raw - ch.filtered);
-  ch.percent = (fabsf(ch.zero) > 1.0f)
+  ch.percent = (fabsf(ch.zero) > HALL_ZERO_MIN_COUNTS)
       ? ((ch.filtered - ch.zero) / ch.zero * 100.0f)
       : 0.0f;
 
@@ -283,7 +330,7 @@ static void updateWindmillStop(uint32_t nowUs) {
 
   uint32_t timeoutUs = WINDMILL_INITIAL_TIMEOUT_US;
   if (windmill.periodValid) {
-    float adaptiveTimeout = windmill.filteredPeriodUs * 2.5f;
+    float adaptiveTimeout = windmill.filteredPeriodUs * WINDMILL_STOP_PERIOD_FACTOR;
     if (adaptiveTimeout < WINDMILL_MIN_TIMEOUT_US) {
       adaptiveTimeout = WINDMILL_MIN_TIMEOUT_US;
     }
@@ -326,13 +373,13 @@ static void sendFrame(uint32_t nowUs) {
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
-  delay(500);
+  delay(SERIAL_STARTUP_DELAY_MS);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(PIN_SEED, ADC_11db);
-  analogSetPinAttenuation(PIN_KETTLE, ADC_11db);
-  analogSetPinAttenuation(PIN_WINDMILL, ADC_11db);
-  analogSetPinAttenuation(PIN_KNOB, ADC_11db);
+  analogReadResolution(ADC_RESOLUTION_BITS);
+  analogSetPinAttenuation(PIN_SEED, ADC_INPUT_ATTENUATION);
+  analogSetPinAttenuation(PIN_KETTLE, ADC_INPUT_ATTENUATION);
+  analogSetPinAttenuation(PIN_WINDMILL, ADC_INPUT_ATTENUATION);
+  analogSetPinAttenuation(PIN_KNOB, ADC_INPUT_ATTENUATION);
 
   pinMode(PIN_SEED, INPUT);
   pinMode(PIN_KETTLE, INPUT);
@@ -371,5 +418,5 @@ void loop() {
     sendFrame(nowUs);
   }
 
-  delay(1);  // Yield to the ESP32 system; wheel ADC target remains ~500 Hz.
+  delay(MAIN_LOOP_YIELD_MS);  // Yield to ESP32; wheel ADC target remains ~500 Hz.
 }
