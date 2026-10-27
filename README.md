@@ -71,6 +71,20 @@ ESP32-S3 读取连续 ADC 数值，在固件中转换成三个离散档位，**�
 
 仓库已包含 [src/main.cpp](src/main.cpp)、[platformio.ini](platformio.ini) 和 [.gitignore](.gitignore)。源码实现了 FlowerV1 风格的 ADC 校准、IIR 滤波、`c/C` 重新校准、七字段串口输出，以及风车转速和旋钮分档。**目前未进行本地 PlatformIO 编译及实物验证。**
 
+### 引脚与阈值：统一在源码开头配置
+
+`src/main.cpp` 开头设有 **USER CONFIGURATION / 用户配置区**，所有引脚与可调阈值都集中在这里，无需在采样、校准或通信函数内部查找。
+
+配置区划分为六组：**GPIO 定义**、**串口/ADC/滤波**、**种子与水壶开关量阈值**、**风车磁峰与转速参数**、**电位器分档阈值**、**校准参数**。阈值是原型默认值，接好实物之后再调整。
+
+ESP32-S3 推荐优先使用 **ADC1 的 GPIO1、GPIO2、GPIO4～GPIO10**（每路使用不同 GPIO）。完整 ADC1 映射已写入 `src/main.cpp` 的文件头注释：
+
+- `GPIO1～GPIO10` 是 ADC1 模拟输入，其中 **GPIO3 属于启动配置引脚**，虽然能用 ADC，但不建议使用。
+- `GPIO11～GPIO20` 对应 ADC2，应检查板上功能与 Wi-Fi 等资源使用情况；**GPIO19/20 同时涉及原生 USB，不建议占用**。
+- 开发板不一定引出全部芯片引脚；选用之前确认实际板卡管脚图。
+
+当前代码还有编译期检查：GPIO 必须支持 ESP32-S3 ADC，且四路模拟输入不能使用相同引脚。
+
 ### 默认接线（在 main.cpp 顶部修改）
 
 | 设备 | ESP32-S3 | ADC |
@@ -134,7 +148,17 @@ seed_state kettle_state windmill_state knob_value seed_value kettle_value windmi
 | `WINDMILL_PEAK_POLARITY` | +1（相反磁极改 -1） |
 | `WINDMILL_ON_COUNTS / WINDMILL_OFF_COUNTS` | 65 / 30（ADC counts） |
 | `WINDMILL_SAMPLE_US` | 2000 |
+| `KNOB_ADC_MIN` / `KNOB_ADC_MAX` | 0 / 4095 |
 | `KNOB_HYSTERESIS_COUNTS` | 50 |
+| `SENSOR_FILTER_ALPHA` | 0.20 |
+| `WINDMILL_FILTER_ALPHA` / `WINDMILL_BASELINE_ALPHA` | 0.35 / 0.002 |
+| `RPM_FILTER_ALPHA` | 0.35 |
+| `WINDMILL_REFRACTORY_US` | 8000 |
+| `WINDMILL_STOP_PERIOD_FACTOR` | 2.5 |
+| `WINDMILL_INITIAL_TIMEOUT_US` | 8000000 |
+| `WINDMILL_MIN_TIMEOUT_US` / `WINDMILL_MAX_TIMEOUT_US` | 1500000 / 20000000 |
+| `CALIBRATION_SAMPLES` / `CALIBRATION_INTERVAL_MS` | 200 / 10 |
+| `CALIBRATION_SETTLE_DELAY_MS` | 1000 |
 
 风车磁峰必须独立可分辨；磁铁过密导致磁场叠加、极性不匹配或阈值不合适都可能漏计和误计。需要先手动旋转一圈确认实际每圈脉冲数，之后再调整相关参数。
 
