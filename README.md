@@ -89,7 +89,7 @@ ESP32-S3 固件预计包含以下功能：
 - 连接：ESP32-S3 → USB Serial → Max/MSP
 - 波特率：**115200 baud**（沿用 V1）
 - 发送周期：**50 ms，约 20 Hz**（沿用 V1）
-- 帧格式：**纯 ASCII 数字、空格分隔、换行 `\\n` 结束**；正式数据流不夹杂调试说明文字
+- 帧格式：**纯 ASCII 数字、空格分隔、换行 `\n` 结束**；正式数据流不夹杂调试说明文字
 - 接收端根据字段顺序拆分，避免依赖调试日志或文字标签
 - V1 支持接收 `c`/`C` 重新校准；V2 **拟延续该命令**，但需要确保重新归零时磁体已经远离对应传感器
 
@@ -100,7 +100,7 @@ FlowerV1 当前是 `S10 S11 S12 P10 P11 P12`（三路开关 + 三路百分比）
 为方便 Max 按固定顺序解析，初步建议：
 
 ```text
-seed_state kettle_state windmill_rpm knob_value\\n
+seed_state kettle_state windmill_rpm knob_value\n
 ```
 
 示例（**仅为协议草案，不代表已有固件输出**）：
