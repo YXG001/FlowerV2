@@ -69,7 +69,25 @@ ESP32-S3 读取连续 ADC 数值，在固件中转换成三个离散档位，**�
 
 ## 首版 ESP32-S3 固件
 
-仓库已包含 [src/main.cpp](src/main.cpp)、[platformio.ini](platformio.ini) 和 [.gitignore](.gitignore)。源码实现了 FlowerV1 风格的 ADC 校准、IIR 滤波、`c/C` 重新校准、七字段串口输出，以及风车转速和旋钮分档。**目前未进行本地 PlatformIO 编译及实物验证。**
+本仓库使用 **PlatformIO + Arduino（ESP32-S3）**，不是原生 ESP-IDF 项目。源码实现了 FlowerV1 风格的 ADC 校准、IIR 滤波、`c/C` 重新校准、七字段串口输出，以及风车转速和旋钮分档。**目前未进行 PlatformIO 编译及实物验证。**
+
+### PlatformIO 项目目录
+
+| 路径 | 用途 | 现状 |
+| --- | --- | --- |
+| `platformio.ini` | PlatformIO 项目、开发板和 Framework 配置 | 已配置 Arduino |
+| `src/main.cpp` | 主程序入口、采样、校准及协议 | 已编写首版 |
+| `include/` | 预留共享的头文件 | 暂无独立头文件 |
+| `lib/` | 预留项目自己的可复用组件库 | 暂无独立库 |
+| `test/` | 预留 PlatformIO 单元测试 | 尚无自动化测试 |
+| `.vscode/extensions.json` | 推荐 VS Code PlatformIO 扩展 | 已配置 |
+| `.gitignore` | 忽略自动生成的编译文件 | 已配置 |
+
+`include/`、`lib/`、`test/` 中的说明文件用于在 Git 中保留目录；**它们不是编译所必需的**。当前实际固件仍在 `src/main.cpp`，不引入虚构的组件或空实现。
+
+本项目不需要 ESP-IDF 专用的 `CMakeLists.txt`、`sdkconfig` 或 `main/`。PlatformIO 会在首次构建时自动生成 `.pio/`，这个目录是构建缓存，通常不应提交 GitHub。
+
+在 VS Code 中打开包含 `platformio.ini` 的 **FlowerV2 仓库根目录**，而不是只打开 `src/`。
 
 ### 配置区：只保留经常需要调节的项目
 
