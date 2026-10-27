@@ -64,6 +64,7 @@ static_assert(WINDMILL_OFF_COUNTS < WINDMILL_ON_COUNTS, "Windmill thresholds rev
 static_assert(KNOB_ADC_MAX > KNOB_ADC_MIN, "Knob ADC range invalid");
 
 struct HallInput {
+  explicit HallInput(uint8_t gpio) : pin(gpio) {}
   uint8_t pin;
   uint16_t raw = 0;
   float filtered = 0.0f;
