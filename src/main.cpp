@@ -9,38 +9,56 @@
 // 49E-family parts from different vendors are not guaranteed to be interchangeable.
 
 // ============================================================================
-// FlowerV2 USER CONFIGURATION / 用户配置区：引脚、阈值和可调参数
+// USER CONFIGURATION / 用户常用配置
 // ============================================================================
-// 全部 GPIO 和检测阈值均定义在本文件开头；通常只需修改下方常量。
-//
-// 可选 ADC 引脚（ESP32-S3 芯片映射）：
-//   GPIO1=ADC1_CH0     GPIO2=ADC1_CH1     GPIO3=ADC1_CH2 (*)
-//   GPIO4=ADC1_CH3     GPIO5=ADC1_CH4     GPIO6=ADC1_CH5
-//   GPIO7=ADC1_CH6     GPIO8=ADC1_CH7     GPIO9=ADC1_CH8
-//   GPIO10=ADC1_CH9
-// 推荐：GPIO1、GPIO2、GPIO4～GPIO10，均为 ADC1 输入。
-// (*) GPIO3 是启动配置 (strapping) 引脚，虽然支持 ADC，但不推荐。
-// GPIO11～GPIO20 属于 ADC2，需先检查 Wi-Fi/板载外设等功能占用。
-// GPIO19/20 同时为原生 USB D-/D+，使用 USB 串口时不要占用。
-// GPIO0/45/46 是启动配置引脚，不是适用的模拟输入。
-// 具体开发板可能没有引出上述所有引脚，也可能连接板载设备。
-// 四个模拟信号必须占用不同 GPIO。更换接线时修改 PIN_* 常量即可。
-//
-// 49E 三脚霍尔的供电范围与 VCC/GND/OUT 引脚顺序须核对具体型号。
-// ESP32-S3 ADC 不允许直接接入 5V 模拟输出；必要时先分压/保护。
-// ADC 的可测量电压范围受衰减配置限制，接近满量程时可能削顶。
-// 本项目阈值尚未标定，所有 ON/OFF 阈值都必须根据实物测试调整。
+// ADC input choices on ESP32-S3:
+//   ADC1: GPIO1=CH0, GPIO2=CH1, GPIO3=CH2 (*), GPIO4=CH3, GPIO5=CH4,
+//         GPIO6=CH5, GPIO7=CH6, GPIO8=CH7, GPIO9=CH8, GPIO10=CH9.
+//   Recommended: GPIO1, GPIO2, GPIO4-GPIO10. GPIO3 is a strapping pin (*).
+//   ADC2: GPIO11-GPIO20 (check Wi-Fi/peripheral conflicts before using).
+//   GPIO19/20 are also native USB D-/D+: avoid when using native USB.
+//   GPIO0/45/46 are strapping pins and are not usable ADC inputs here.
+//   Board variants may reserve some pins. All four analog pins must be unique.
+//   Verify actual 49E sensor pinout and output voltage before wiring:
+//   ESP32-S3 ADC pins are NOT 5V tolerant.
 // ============================================================================
 
-// 1. GPIO DEFINITIONS / 引脚定义 ---------------------------------------------
+// 1. GPIO / 引脚定义（优先修改）
 static constexpr uint8_t PIN_SEED     = 4;  // ADC1_CH3
 static constexpr uint8_t PIN_KETTLE   = 5;  // ADC1_CH4
 static constexpr uint8_t PIN_WINDMILL = 6;  // ADC1_CH5
 static constexpr uint8_t PIN_KNOB     = 7;  // ADC1_CH6
 
-// -----------------------------------------------------------------------------
-// 2. COMMUNICATION, ADC AND FILTER SETTINGS / 串口、ADC 与滤波
-// -----------------------------------------------------------------------------
+// 2. Seed / Kettle / 种子与水壶的触发、释放阈值（%）
+static constexpr float SEED_ON_PERCENT    = 5.0f;
+static constexpr float SEED_OFF_PERCENT   = 3.0f;
+static constexpr float KETTLE_ON_PERCENT  = 5.0f;
+static constexpr float KETTLE_OFF_PERCENT = 3.0f;
+
+// 3. Windmill / 风车磁铁与检测阈值
+static constexpr uint8_t WINDMILL_PULSES_PER_REV = 8; // tentative 8-magnet design
+static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
+static constexpr float   WINDMILL_ON_COUNTS      = 65.0f; // ADC counts
+static constexpr float   WINDMILL_OFF_COUNTS     = 30.0f;
+static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 1500000;
+
+// 4. Knob / 电位器分档
+static constexpr int KNOB_ADC_MIN = 0;
+static constexpr int KNOB_ADC_MAX = 4095;
+static constexpr int KNOB_HYSTERESIS_COUNTS = 50;
+
+// Threshold notes:
+// - Seed/kettle ON must be higher than OFF (percent of no-magnet baseline).
+// - Windmill ON must be higher than OFF (ADC counts, not percent).
+// - WINDMILL_PULSES_PER_REV = real number of detected pulses per revolution.
+// - WINDMILL_MIN_TIMEOUT_US controls the minimum stop-detection delay.
+// - KNOB_ADC_MIN/MAX define usable potentiometer range; three equal sections.
+// ============================================================================
+// END USER CONFIGURATION / 下方是内部默认值，通常不需要修改
+// ============================================================================
+
+// Internal timing, filtering, ADC and calibration defaults
+// These constants are intentionally outside the normal user configuration.
 static constexpr uint32_t SERIAL_BAUD               = 115200;
 static constexpr uint32_t SENSOR_SAMPLE_INTERVAL_MS = 20;    // 50 Hz
 static constexpr uint32_t OUTPUT_INTERVAL_MS        = 50;    // 20 Hz
@@ -51,46 +69,18 @@ static constexpr uint8_t  ADC_RESOLUTION_BITS        = 12;
 static constexpr auto     ADC_INPUT_ATTENUATION      = ADC_11db;
 static constexpr uint32_t SERIAL_STARTUP_DELAY_MS   = 500;
 static constexpr uint32_t MAIN_LOOP_YIELD_MS        = 1;
-
-// 3. SEED/KETTLE SWITCH THRESHOLDS / 种子、水壶触发与释放阈值（百分比）
-// Percentage change relative to calibrated baseline. ON must be > OFF.
-static constexpr float SEED_ON_PERCENT    = 5.0f;
-static constexpr float SEED_OFF_PERCENT   = 3.0f;
-static constexpr float KETTLE_ON_PERCENT  = 5.0f;
-static constexpr float KETTLE_OFF_PERCENT = 3.0f;
-
-// 4. WINDMILL PARAMETERS AND THRESHOLDS / 风车检测阈值与转速配置
-// 默认每颗磁铁形成一个正磁场峰；反向峰将 POLARITY 设为 -1。
-// PULSES_PER_REV 必须等于每转实际识别到的有效磁峰数量。
-static constexpr uint8_t WINDMILL_PULSES_PER_REV = 8; // tentative 8-magnet design
-static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
-static constexpr float   WINDMILL_ON_COUNTS      = 65.0f; // ADC counts
-static constexpr float   WINDMILL_OFF_COUNTS     = 30.0f;
 static constexpr float   WINDMILL_BASELINE_ALPHA = 0.002f; // slow moving reference
 static constexpr float   RPM_FILTER_ALPHA        = 0.35f;
 static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 2.5f;
 static constexpr uint32_t WINDMILL_REFRACTORY_US     = 8000;
 static constexpr uint32_t WINDMILL_INITIAL_TIMEOUT_US = 8000000;
-static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 1500000;
 static constexpr uint32_t WINDMILL_MAX_TIMEOUT_US     = 20000000;
-
-// 5. KNOB THRESHOLDS / 电位器 0/1/2 三档的量程与滞回
-// 默认对 ADC 有效量程三等分，需根据实际电位器端点调整。
-static constexpr int KNOB_ADC_MIN = 0;
-static constexpr int KNOB_ADC_MAX = 4095;
-static constexpr int KNOB_HYSTERESIS_COUNTS = 50;
-
-// 6. CALIBRATION / 校准参数（FlowerV1 风格）
 static constexpr uint16_t CALIBRATION_SAMPLES = 200;
 static constexpr uint32_t CALIBRATION_INTERVAL_MS = 10;
 static constexpr uint32_t CALIBRATION_SETTLE_DELAY_MS = 1000;
 static constexpr uint16_t CALIBRATION_LED_TOGGLE_SAMPLES = 25;
 static constexpr float HALL_ZERO_MIN_COUNTS = 1.0f;
 static constexpr uint8_t STATUS_LED_BRIGHTNESS = 24;
-
-// ============================================================================
-// END OF USER CONFIGURATION / 以下为处理逻辑，通常无需修改
-// ============================================================================
 
 constexpr bool isAdcCapableGpio(uint8_t pin) {
   return pin >= 1 && pin <= 20;
