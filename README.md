@@ -19,7 +19,7 @@
 | 花盆与磁性种子 | 将内置磁铁的种子放入花盆 | 花盆底部的 49E 系列线性霍尔传感器 | **`seed_state`：0/1 开关量**，同时发送连续传感器读数 `seed_value` |
 | 磁性水壶 | 将带磁铁的水壶靠近花盆 | 49E 系列线性霍尔传感器 | **`kettle_state`：0/1 开关量**，同时发送连续传感器读数 `kettle_value` |
 | 磁编码器风车 | 手动或通过气流带动风车旋转 | 磁体与 49E 系列线性霍尔传感器构成的检测机构 | **`windmill_state`：0/1 转动状态**，以及 `windmill_rpm`；不要求绝对角度 |
-| 旋钮 | 转动电位器旋钮 | **电位器 + ESP32-S3 ADC** | 将旋钮位置量化为三个档位 **0、1、2**，不输出连续角度 |
+| 旋钮 | 转动电位器旋钮 | **电位器 + ESP32-S3 ADC** | 将旋钮位置量化为三个档位 **0、1、2**，并额外输出原始 ADC 值 `knob_raw`（不等同于角度） |
 
 以上均为设计目标，不代表已完成标定或功能验证。
 
@@ -30,7 +30,7 @@
 - **MCU：** ESP32-S3
 - **职责：** 传感器采样、信号滤波、基线与阈值校准、交互状态识别，以及向上位机输出数据
 - **上位机：** Max（Max/MSP）
-- **通信接口及数据格式：** 已参考 [FlowerV1](https://github.com/YXG001/FlowerV1) 编写 USB 串口、空格分隔 ASCII 数字与换行分帧的七字段协议
+- **通信接口及数据格式：** 已参考 [FlowerV1](https://github.com/YXG001/FlowerV1) 编写 USB 串口、空格分隔 ASCII 数字与换行分帧的八字段协议（原七字段之后增加 `knob_raw`）
 
 ### 霍尔传感器
 
@@ -59,17 +59,17 @@
 
 计划使用霍尔传感器检测风车上磁体经过时的磁场变化。具体磁铁数量、磁极排列和传感器数量尚未确定。
 
-风车不需要绝对角度。首版采用目标约 500 Hz 的 ADC 采样、快速滤波、动态基线和滞回峰值检测。`windmill_rpm` 根据脉冲间隔计算；`windmill_state` 为停止 0／转动 1，停止超时后 RPM 归零。默认每转 8 个有效脉冲，需按实际磁铁布局与测得的脉冲数调整。
+风车不需要绝对角度。首版采用目标约 500 Hz 的 ADC 采样、快速滤波、动态基线和滞回峰值检测。`windmill_rpm` 根据脉冲间隔计算；`windmill_state` 为停止 0／转动 1，停止超时后 RPM 归零。目前安装 3 颗磁铁，按照每颗磁铁经过时产生一个有效脉冲设置为 **3 脉冲/转**。必须检查实际磁极方向和阈值，确认每转确实检测到三次有效正向磁峰。
 
 ### 旋钮：电位器（已选定）
 
 旋钮使用**电位器**，不再采用三个霍尔传感器检测磁性指针的备选方案。电位器两端接合适的供电与 GND，滑动端连接 ESP32-S3 的 ADC 输入；保证滑动端电压不超过 MCU ADC 的允许范围。
 
-ESP32-S3 读取连续 ADC 数值，在固件中转换成三个离散档位，**向 Max 只发送整数 `0`、`1`、`2`**。初始方案可根据实测有效行程将其划分为三段；边界增加适当滞回，防止旋钮停留在两档临界位置时抖动。具体阈值以及是否使用机械定位式电位器，待实际选型后确定。
+ESP32-S3 读取连续 ADC 数值，在固件中转换成三个离散档位，**向 Max 发送档位整数 `0`、`1`、`2`，同时额外发送原始 ADC 读数 `knob_raw`（0–4095）**。初始方案可根据实测有效行程将其划分为三段；边界增加适当滞回，防止旋钮停留在两档临界位置时抖动。具体阈值以及是否使用机械定位式电位器，待实际选型后确定。
 
 ## 首版 ESP32-S3 固件
 
-本仓库使用 **PlatformIO + Arduino（ESP32-S3）**，不是原生 ESP-IDF 项目。源码实现了 FlowerV1 风格的 ADC 校准、IIR 滤波、`c/C` 重新校准、七字段串口输出，以及风车转速和旋钮分档。**目前未进行 PlatformIO 编译及实物验证。**
+本仓库使用 **PlatformIO + Arduino（ESP32-S3）**，不是原生 ESP-IDF 项目。源码实现了 FlowerV1 风格的 ADC 校准、IIR 滤波、`c/C` 重新校准、八字段串口输出（前七字段顺序不变），以及风车转速和旋钮分档。**目前未进行 PlatformIO 编译及实物验证。**
 
 ### PlatformIO 项目目录
 
@@ -125,19 +125,19 @@ pio run -t upload
 pio device monitor -b 115200
 ```
 
-固件每 50 ms（约 20 Hz）通过 USB 串口发送一行，共七个空格分隔的数字，行尾为换行：
+固件每 50 ms（约 20 Hz）通过 USB 串口发送一行，共 **8 个**空格分隔的数字，行尾为换行。前 7 个字段顺序不变；第 8 个字段 `knob_raw` 是电位器未经滤波的 ADC 读数：
 
 ```text
-seed_state kettle_state windmill_state knob_value seed_value kettle_value windmill_rpm
+seed_state kettle_state windmill_state knob_value seed_value kettle_value windmill_rpm knob_raw
 ```
 
 示例数据（仅演示格式，非实测）：
 
 ```text
-0 0 0 0 0.00 0.00 0.0
-1 0 1 1 5.85 -0.31 45.2
-1 1 1 2 8.21 7.68 120.5
-0 1 0 2 0.60 6.92 0.0
+0 0 0 0 0.00 0.00 0.0 280
+1 0 1 1 5.85 -0.31 45.2 1830
+1 1 1 2 8.21 7.68 120.5 3670
+0 1 0 2 0.60 6.92 0.0 3610
 ```
 
 | 字段 | 定义 |
@@ -147,6 +147,9 @@ seed_state kettle_state windmill_state knob_value seed_value kettle_value windmi
 | `knob_value` | 离散 `0/1/2`，电位器三个档位 |
 | `seed_value` / `kettle_value` | 相对开机零点的有符号百分比，不是厘米距离 |
 | `windmill_rpm` | 非负转速 RPM，停止超时归零 |
+| `knob_raw` | 最新一次电位器 ADC 原始采样值（12-bit，0–4095），用于观察与标定 |
+
+Max 中将原来的 `unpack i i i i f f f` 改为 `unpack i i i i f f f i`，第八个出口接 `number` 可查看原始 ADC。既有前七个出口的含义不变。电位器档位依据滤波后的 ADC 计算，因此位于边界或旋转过程中，`knob_raw` 与当前档位不一定瞬时严格对应。
 
 ### FlowerV1 风格的自动校准及滤波
 
@@ -164,9 +167,9 @@ seed_state kettle_state windmill_state knob_value seed_value kettle_value windmi
 | `PIN_SEED / PIN_KETTLE / PIN_WINDMILL / PIN_KNOB` | 4 / 5 / 6 / 7 | 实际接线不同 |
 | `SEED_ON_PERCENT / SEED_OFF_PERCENT` | 5 / 3 | 种子触发距离或误报不合适 |
 | `KETTLE_ON_PERCENT / KETTLE_OFF_PERCENT` | 5 / 3 | 水壶触发距离或误报不合适 |
-| `WINDMILL_PULSES_PER_REV` | 8 | 每转实际可计数的磁峰数量不同 |
+| `WINDMILL_PULSES_PER_REV` | 3 | 每转实际可计数的磁峰数量不同 |
 | `WINDMILL_PEAK_POLARITY` | +1 | 磁峰方向与默认相反 |
-| `WINDMILL_ON_COUNTS / WINDMILL_OFF_COUNTS` | 65 / 30 | 磁铁漏计或误计 |
+| `WINDMILL_ON_COUNTS / WINDMILL_OFF_COUNTS` | 30 / 10 | 磁铁漏计或误计 |
 | `WINDMILL_MIN_TIMEOUT_US` | 1500000 | 需要调整停转反馈的最低延迟 |
 | `KNOB_ADC_MIN / KNOB_ADC_MAX` | 0 / 4095 | 实际电位器不能覆盖默认量程 |
 | `KNOB_HYSTERESIS_COUNTS` | 50 | 旋钮在档位边界抖动 |
@@ -181,8 +184,8 @@ seed_state kettle_state windmill_state knob_value seed_value kettle_value windmi
 - [ ] 确定风车磁体与霍尔传感器排布，验证 `windmill_state` 转动超时及 `windmill_rpm` 转速检测
 - [ ] 选定适合的电位器、配置 ADC 输入，确定三个档位（0/1/2）的阈值与滞回
 - [x] 初步分配 GPIO4/5/6/7 的 ADC1 输入（等待实物接线验证）
-- [x] 固件已按七字段固定顺序编写串口输出
-- [ ] 在 Max 端解析七字段并验证旋钮三档
+- [x] 固件已保留原七字段顺序，并在末尾追加第八字段 `knob_raw`
+- [ ] 在 Max 端解析八字段，观察 `knob_raw` 并验证旋钮三档
 - [x] 初版使用相对基线百分比作为种子／水壶连续数值
 - [ ] 测量并修正霍尔灵敏度、风车脉冲数量和阈值
 - [ ] 完成固件原型、整机联调与交互测试
