@@ -38,8 +38,8 @@ static constexpr float KETTLE_OFF_PERCENT = 3.0f;
 // 3. Windmill / 风车磁铁与检测阈值
 static constexpr uint8_t WINDMILL_PULSES_PER_REV = 3; // 3 magnets; each must produce 1 detected pulse
 static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
-static constexpr float   WINDMILL_ON_COUNTS      = 30.0f; // ADC counts (hardware trial)
-static constexpr float   WINDMILL_OFF_COUNTS     = 10.0f;
+static constexpr float   WINDMILL_ON_COUNTS      = 100.0f; // user-tested threshold
+static constexpr float   WINDMILL_OFF_COUNTS     = 60.0f;
 static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 400000; // 0.4 s minimum stop timeout
 
 // 4. Knob / 电位器分档
@@ -62,15 +62,16 @@ static constexpr int KNOB_HYSTERESIS_COUNTS = 50;
 static constexpr uint32_t SERIAL_BAUD               = 115200;
 static constexpr uint32_t SENSOR_SAMPLE_INTERVAL_MS = 20;    // 50 Hz
 static constexpr uint32_t OUTPUT_INTERVAL_MS        = 50;    // 20 Hz
-static constexpr uint32_t WINDMILL_SAMPLE_US        = 2000;  // nominal 500 Hz
+static constexpr uint32_t WINDMILL_SAMPLE_US        = 1000;  // target 1 kHz for short magnetic peaks
 static constexpr float    SENSOR_FILTER_ALPHA       = 0.20f; // FlowerV1 IIR
-static constexpr float    WINDMILL_FILTER_ALPHA     = 0.35f;
+static constexpr float    WINDMILL_FILTER_ALPHA     = 0.50f; // quicker rise on brief Hall peaks
 static constexpr uint8_t  ADC_RESOLUTION_BITS        = 12;
 static constexpr auto     ADC_INPUT_ATTENUATION      = ADC_11db;
 static constexpr uint32_t SERIAL_STARTUP_DELAY_MS   = 500;
 static constexpr uint32_t MAIN_LOOP_YIELD_MS        = 1;
 static constexpr float   WINDMILL_BASELINE_ALPHA = 0.002f; // slow moving reference
-static constexpr float   RPM_FILTER_ALPHA        = 0.70f; // faster response to a new pulse interval
+static constexpr float   RPM_FILTER_ALPHA        = 0.70f; // interval smoothing during steady speed/deceleration
+static constexpr float   RPM_ACCEL_ALPHA         = 0.95f; // fast response to shortening intervals
 static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 1.8f; // shorter adaptive stop timeout
 static constexpr uint8_t WINDMILL_CONFIRM_SAMPLES = 2; // require >=2 consecutive high samples
 static constexpr uint32_t WINDMILL_REFRACTORY_US     = 8000;
@@ -279,9 +280,9 @@ static void updateKnob() {
 
 // -----------------------------------------------------------------------------
 // Windmill: positive-peak detection with a slow reference (AC-like tracking).
-// Median-of-three ADC samples rejects isolated spikes, and a short consecutive
-// threshold confirmation reduces false pulses without hiding actual Hall peaks.
-// Very narrow real magnetic peaks may require tuning the confirmation samples.
+// Faster sampling and filter response help catch brief magnetic pulses from a
+// sudden hand spin. Median-of-three + consecutive confirmation still reject
+// isolated ADC spikes. RPM needs at least two genuine detected pulses.
 // -----------------------------------------------------------------------------
 static uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
   if (a > b) { const uint16_t tmp = a; a = b; b = tmp; }
@@ -345,7 +346,11 @@ static void updateWindmill(uint32_t nowUs) {
         windmill.filteredPeriodUs = (float)elapsedUs;
         windmill.periodValid = true;
       } else {
-        windmill.filteredPeriodUs += RPM_FILTER_ALPHA
+        // Rapid acceleration shortens pulse intervals: follow it almost at once.
+        // Retain smoothing for constant-speed jitter and deceleration.
+        const float intervalAlpha = (float)elapsedUs < windmill.filteredPeriodUs
+            ? RPM_ACCEL_ALPHA : RPM_FILTER_ALPHA;
+        windmill.filteredPeriodUs += intervalAlpha
             * ((float)elapsedUs - windmill.filteredPeriodUs);
       }
       windmill.rpm = 60000000.0f
