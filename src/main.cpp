@@ -130,6 +130,16 @@ static uint16_t knobRaw = 0; // latest unfiltered ADC count (0..4095)
 static float knobFiltered = 0.0f;
 static uint8_t knobValue = 0;
 
+// 'd' toggles a diagnostic stream for the windmill Hall sensor.
+// Normal operation continues to use the unchanged eight-field Max/MSP frame.
+static bool windmillDebug = false;
+static uint16_t windmillRawMin = 4095;
+static uint16_t windmillRawMax = 0;
+static float windmillResponseMin = 4095.0f;
+static float windmillResponseMax = -4095.0f;
+static float windmillLastResponse = 0.0f;
+static uint32_t windmillDebugPulseCount = 0;
+
 static uint32_t lastHallSampleMs = 0;
 static uint32_t lastWheelSampleUs = 0;
 static uint32_t lastOutputMs = 0;
@@ -267,6 +277,10 @@ static void updateKnob() {
 // -----------------------------------------------------------------------------
 static void updateWindmill(uint32_t nowUs) {
   windmill.raw = (uint16_t)analogRead(PIN_WINDMILL);
+  if (windmillDebug) {
+    if (windmill.raw < windmillRawMin) windmillRawMin = windmill.raw;
+    if (windmill.raw > windmillRawMax) windmillRawMax = windmill.raw;
+  }
   windmill.filtered += WINDMILL_FILTER_ALPHA
       * ((float)windmill.raw - windmill.filtered);
   windmill.baseline += WINDMILL_BASELINE_ALPHA
@@ -274,6 +288,11 @@ static void updateWindmill(uint32_t nowUs) {
 
   const float response = WINDMILL_PEAK_POLARITY
       * (windmill.filtered - windmill.baseline);
+  if (windmillDebug) {
+    windmillLastResponse = response;
+    if (response < windmillResponseMin) windmillResponseMin = response;
+    if (response > windmillResponseMax) windmillResponseMax = response;
+  }
 
   if (windmill.pulseHigh) {
     if (response <= WINDMILL_OFF_COUNTS) {
@@ -289,6 +308,7 @@ static void updateWindmill(uint32_t nowUs) {
   }
 
   windmill.pulseHigh = true;
+  if (windmillDebug) ++windmillDebugPulseCount;
   if (windmill.hasPulse) {
     const uint32_t elapsedUs = (uint32_t)(nowUs - windmill.lastPulseUs);
     // A pulse after a long stop starts a new measurement.
@@ -349,6 +369,39 @@ static void updateWindmillStop(uint32_t nowUs) {
 static void sendFrame(uint32_t nowUs) {
   updateWindmillStop(nowUs);
 
+  if (windmillDebug) {
+    // W raw raw_min raw_max filtered baseline response response_min
+    //   response_max pulses_since_debug_enable rotating rpm
+    // Min/max summarize all ~500 Hz samples since the previous 20 Hz frame.
+    Serial.print("W ");
+    Serial.print(windmill.raw);
+    Serial.print(' ');
+    Serial.print(windmillRawMin);
+    Serial.print(' ');
+    Serial.print(windmillRawMax);
+    Serial.print(' ');
+    Serial.print(windmill.filtered, 1);
+    Serial.print(' ');
+    Serial.print(windmill.baseline, 1);
+    Serial.print(' ');
+    Serial.print(windmillLastResponse, 1);
+    Serial.print(' ');
+    Serial.print(windmillResponseMin, 1);
+    Serial.print(' ');
+    Serial.print(windmillResponseMax, 1);
+    Serial.print(' ');
+    Serial.print(windmillDebugPulseCount);
+    Serial.print(' ');
+    Serial.print(windmill.rotating ? 1 : 0);
+    Serial.print(' ');
+    Serial.println(windmill.rpm, 1);
+    windmillRawMin = 4095;
+    windmillRawMax = 0;
+    windmillResponseMin = 4095.0f;
+    windmillResponseMax = -4095.0f;
+    return;
+  }
+
   Serial.print(seed.active ? 1 : 0);
   Serial.print(' ');
   Serial.print(kettle.active ? 1 : 0);
@@ -390,6 +443,13 @@ void loop() {
     const char command = (char)Serial.read();
     if (command == 'c' || command == 'C') {
       calibrateSensors();
+    } else if (command == 'd' || command == 'D') {
+      windmillDebug = !windmillDebug;
+      windmillDebugPulseCount = 0;
+      windmillRawMin = 4095;
+      windmillRawMax = 0;
+      windmillResponseMin = 4095.0f;
+      windmillResponseMax = -4095.0f;
     }
   }
 
