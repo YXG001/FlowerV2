@@ -40,7 +40,7 @@ static constexpr uint8_t WINDMILL_PULSES_PER_REV = 3; // 3 magnets; each must pr
 static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
 static constexpr float   WINDMILL_ON_COUNTS      = 30.0f; // ADC counts (hardware trial)
 static constexpr float   WINDMILL_OFF_COUNTS     = 10.0f;
-static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 1500000;
+static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 400000; // 0.4 s minimum stop timeout
 
 // 4. Knob / 电位器分档
 static constexpr int KNOB_ADC_MIN = 0;
@@ -70,8 +70,9 @@ static constexpr auto     ADC_INPUT_ATTENUATION      = ADC_11db;
 static constexpr uint32_t SERIAL_STARTUP_DELAY_MS   = 500;
 static constexpr uint32_t MAIN_LOOP_YIELD_MS        = 1;
 static constexpr float   WINDMILL_BASELINE_ALPHA = 0.002f; // slow moving reference
-static constexpr float   RPM_FILTER_ALPHA        = 0.35f;
-static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 2.5f;
+static constexpr float   RPM_FILTER_ALPHA        = 0.70f; // faster response to a new pulse interval
+static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 1.8f; // shorter adaptive stop timeout
+static constexpr uint8_t WINDMILL_CONFIRM_SAMPLES = 2; // require >=2 consecutive high samples
 static constexpr uint32_t WINDMILL_REFRACTORY_US     = 8000;
 static constexpr uint32_t WINDMILL_INITIAL_TIMEOUT_US = 8000000;
 static constexpr uint32_t WINDMILL_MAX_TIMEOUT_US     = 20000000;
@@ -114,6 +115,9 @@ static HallInput kettle{PIN_KETTLE};
 
 struct WindmillInput {
   uint16_t raw = 0;
+  uint16_t rawHistory[3] = {0, 0, 0};
+  uint8_t rawHistoryIndex = 0;
+  uint8_t consecutiveHighSamples = 0;
   float filtered = 0.0f;
   float baseline = 0.0f;
   bool pulseHigh = false;
@@ -206,6 +210,10 @@ static bool calibrateSensors() {
   kettle.active = false;
 
   windmill = WindmillInput{};
+  // Pre-fill median filter to avoid spurious pulses immediately after calibration.
+  windmill.rawHistory[0] = (uint16_t)wheelZero;
+  windmill.rawHistory[1] = (uint16_t)wheelZero;
+  windmill.rawHistory[2] = (uint16_t)wheelZero;
   windmill.filtered = wheelZero;
   windmill.baseline = wheelZero;
   windmill.raw = (uint16_t)wheelZero;
@@ -271,18 +279,30 @@ static void updateKnob() {
 
 // -----------------------------------------------------------------------------
 // Windmill: positive-peak detection with a slow reference (AC-like tracking).
-// Unlike calibrating to a fixed rotor angle, the moving reference can gradually
-// recover if the wheel stops with a magnet directly beside the Hall sensor.
-// Requires separate, well-resolved peaks and suitable Hall/magnet polarity.
+// Median-of-three ADC samples rejects isolated spikes, and a short consecutive
+// threshold confirmation reduces false pulses without hiding actual Hall peaks.
+// Very narrow real magnetic peaks may require tuning the confirmation samples.
 // -----------------------------------------------------------------------------
+static uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
+  if (a > b) { const uint16_t tmp = a; a = b; b = tmp; }
+  if (b > c) { const uint16_t tmp = b; b = c; c = tmp; }
+  if (a > b) b = a;
+  return b;
+}
+
 static void updateWindmill(uint32_t nowUs) {
   windmill.raw = (uint16_t)analogRead(PIN_WINDMILL);
   if (windmillDebug) {
     if (windmill.raw < windmillRawMin) windmillRawMin = windmill.raw;
     if (windmill.raw > windmillRawMax) windmillRawMax = windmill.raw;
   }
+  windmill.rawHistory[windmill.rawHistoryIndex] = windmill.raw;
+  windmill.rawHistoryIndex = (uint8_t)((windmill.rawHistoryIndex + 1) % 3);
+  const uint16_t stableRaw = median3(windmill.rawHistory[0],
+                                    windmill.rawHistory[1],
+                                    windmill.rawHistory[2]);
   windmill.filtered += WINDMILL_FILTER_ALPHA
-      * ((float)windmill.raw - windmill.filtered);
+      * ((float)stableRaw - windmill.filtered);
   windmill.baseline += WINDMILL_BASELINE_ALPHA
       * (windmill.filtered - windmill.baseline);
 
@@ -300,13 +320,21 @@ static void updateWindmill(uint32_t nowUs) {
     }
     return;
   }
-  if (response < WINDMILL_ON_COUNTS) return;
+  if (response < WINDMILL_ON_COUNTS) {
+    windmill.consecutiveHighSamples = 0;
+    return;
+  }
+  if (windmill.consecutiveHighSamples < WINDMILL_CONFIRM_SAMPLES) {
+    ++windmill.consecutiveHighSamples;
+  }
+  if (windmill.consecutiveHighSamples < WINDMILL_CONFIRM_SAMPLES) return;
 
   if (windmill.hasPulse &&
       (uint32_t)(nowUs - windmill.lastPulseUs) < WINDMILL_REFRACTORY_US) {
     return;
   }
 
+  windmill.consecutiveHighSamples = 0;
   windmill.pulseHigh = true;
   if (windmillDebug) ++windmillDebugPulseCount;
   if (windmill.hasPulse) {
@@ -330,7 +358,8 @@ static void updateWindmill(uint32_t nowUs) {
 
   windmill.lastPulseUs = nowUs;
   windmill.hasPulse = true;
-  windmill.rotating = true;
+  // Only claim rotation after at least two valid pulses establish a period.
+  windmill.rotating = windmill.periodValid;
 }
 
 static void updateWindmillStop(uint32_t nowUs) {
@@ -352,12 +381,21 @@ static void updateWindmillStop(uint32_t nowUs) {
     timeoutUs = (uint32_t)adaptiveTimeout;
   }
 
-  if ((uint32_t)(nowUs - windmill.lastPulseUs) > timeoutUs) {
+  const uint32_t elapsedUs = (uint32_t)(nowUs - windmill.lastPulseUs);
+  if (elapsedUs > timeoutUs) {
     windmill.rotating = false;
     windmill.rpm = 0.0f;
     windmill.hasPulse = false;
     windmill.periodValid = false;
     // Do not reset the magnetic filter/baseline: they adapt while stopped.
+    windmill.consecutiveHighSamples = 0;
+  } else if (windmill.periodValid &&
+             (float)elapsedUs > windmill.filteredPeriodUs) {
+    // With no new pulse, the actual interval is at least elapsedUs.
+    // Decay a stale displayed RPM rather than holding it until stop timeout.
+    const float upperRpm = 60000000.0f /
+        (WINDMILL_PULSES_PER_REV * (float)elapsedUs);
+    if (windmill.rpm > upperRpm) windmill.rpm = upperRpm;
   }
 }
 
