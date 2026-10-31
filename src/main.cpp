@@ -3,7 +3,7 @@
 
 // FlowerV2 firmware prototype
 // ESP32-S3 + 49E-family linear Hall sensors + potentiometer + Max/MSP
-// Frame: seed_state kettle_state windmill_state knob_value seed_value kettle_value windmill_rpm
+// Frame: seed_state kettle_state windmill_state knob_value seed_value kettle_value windmill_rpm knob_raw
 //
 // IMPORTANT: Confirm pinout, supply voltage and ADC-safe output of each Hall sensor.
 // 49E-family parts from different vendors are not guaranteed to be interchangeable.
@@ -36,10 +36,10 @@ static constexpr float KETTLE_ON_PERCENT  = 5.0f;
 static constexpr float KETTLE_OFF_PERCENT = 3.0f;
 
 // 3. Windmill / 风车磁铁与检测阈值
-static constexpr uint8_t WINDMILL_PULSES_PER_REV = 8; // tentative 8-magnet design
+static constexpr uint8_t WINDMILL_PULSES_PER_REV = 3; // 3 magnets; each must produce 1 detected pulse
 static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
-static constexpr float   WINDMILL_ON_COUNTS      = 65.0f; // ADC counts
-static constexpr float   WINDMILL_OFF_COUNTS     = 30.0f;
+static constexpr float   WINDMILL_ON_COUNTS      = 30.0f; // ADC counts (hardware trial)
+static constexpr float   WINDMILL_OFF_COUNTS     = 10.0f;
 static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 1500000;
 
 // 4. Knob / 电位器分档
@@ -126,6 +126,7 @@ struct WindmillInput {
 };
 
 static WindmillInput windmill;
+static uint16_t knobRaw = 0; // latest unfiltered ADC count (0..4095)
 static float knobFiltered = 0.0f;
 static uint8_t knobValue = 0;
 
@@ -199,7 +200,8 @@ static bool calibrateSensors() {
   windmill.baseline = wheelZero;
   windmill.raw = (uint16_t)wheelZero;
 
-  knobFiltered = (float)analogRead(PIN_KNOB);
+  knobRaw = (uint16_t)analogRead(PIN_KNOB);
+  knobFiltered = (float)knobRaw;
   knobValue = 0;
 
   // Reset all timers so the blocked calibration interval is never a "pulse gap".
@@ -237,8 +239,8 @@ static void updateHall(HallInput &ch, float onPercent, float offPercent) {
 // Potentiometer -> positions 0, 1, 2 with a small hysteresis around boundaries.
 // -----------------------------------------------------------------------------
 static void updateKnob() {
-  const float raw = (float)analogRead(PIN_KNOB);
-  knobFiltered += SENSOR_FILTER_ALPHA * (raw - knobFiltered);
+  knobRaw = (uint16_t)analogRead(PIN_KNOB);
+  knobFiltered += SENSOR_FILTER_ALPHA * ((float)knobRaw - knobFiltered);
 
   const float step = (float)(KNOB_ADC_MAX - KNOB_ADC_MIN) / 3.0f;
   const float t01 = KNOB_ADC_MIN + step;
@@ -340,7 +342,8 @@ static void updateWindmillStop(uint32_t nowUs) {
 }
 
 // -----------------------------------------------------------------------------
-// Max/MSP protocol: EXACTLY 7 ASCII numeric fields, one LF-terminated line.
+// Max/MSP protocol: 8 ASCII numeric fields, one LF-terminated line.
+// Fields 1-7 unchanged; field 8 is raw potentiometer ADC for calibration.
 // No log messages are printed on the data serial connection.
 // -----------------------------------------------------------------------------
 static void sendFrame(uint32_t nowUs) {
@@ -358,7 +361,9 @@ static void sendFrame(uint32_t nowUs) {
   Serial.print(' ');
   Serial.print(kettle.percent, 2);
   Serial.print(' ');
-  Serial.println(windmill.rpm, 1);
+  Serial.print(windmill.rpm, 1);
+  Serial.print(' ');
+  Serial.println(knobRaw);
 }
 
 void setup() {
