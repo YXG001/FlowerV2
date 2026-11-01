@@ -30,18 +30,18 @@ static constexpr uint8_t PIN_WINDMILL = 6;  // ADC1_CH5
 static constexpr uint8_t PIN_KNOB     = 7;  // ADC1_CH6
 
 // 2. Seed / Kettle / 种子与水壶的触发、释放阈值（%）
-static constexpr float SEED_ON_PERCENT    = 5.0f;
-static constexpr float SEED_OFF_PERCENT   = 3.0f;
-static constexpr float KETTLE_ON_PERCENT  = 5.0f;
-static constexpr float KETTLE_OFF_PERCENT = 3.0f;
+static constexpr float SEED_ON_PERCENT    = 0.5f;
+static constexpr float SEED_OFF_PERCENT   = 0.3f;
+static constexpr float KETTLE_ON_PERCENT  = 0.5f;
+static constexpr float KETTLE_OFF_PERCENT = 0.3f;
 
 // 3. Windmill / 风车磁铁与检测阈值
 static constexpr uint8_t WINDMILL_PULSES_PER_REV = 3; // 3 magnets; each must produce 1 detected pulse
-static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
-static constexpr float   WINDMILL_ON_COUNTS      = 100.0f; // user-tested threshold
-static constexpr float   WINDMILL_OFF_COUNTS     = 60.0f;
-static constexpr float   WINDMILL_FIXED_BASELINE_COUNTS = 2048.0f; // ADC midpoint, no tracking
-static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 400000; // 0.4 s minimum stop timeout
+static constexpr int8_t  WINDMILL_PEAK_POLARITY  = -1;
+static constexpr float   WINDMILL_ON_COUNTS      = 200.0f; // user-tested threshold
+static constexpr float   WINDMILL_OFF_COUNTS     = 100.0f;
+static constexpr float   WINDMILL_FIXED_BASELINE_COUNTS = 2000.0f; // ADC midpoint, no tracking
+static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 100000; // 0.4 s minimum stop timeout
 
 // 4. Knob / 电位器分档
 static constexpr int KNOB_ADC_MIN = 0;
