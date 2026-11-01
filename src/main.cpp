@@ -40,6 +40,7 @@ static constexpr uint8_t WINDMILL_PULSES_PER_REV = 3; // 3 magnets; each must pr
 static constexpr int8_t  WINDMILL_PEAK_POLARITY  = 1;
 static constexpr float   WINDMILL_ON_COUNTS      = 100.0f; // user-tested threshold
 static constexpr float   WINDMILL_OFF_COUNTS     = 60.0f;
+static constexpr float   WINDMILL_FIXED_BASELINE_COUNTS = 2048.0f; // ADC midpoint, no tracking
 static constexpr uint32_t WINDMILL_MIN_TIMEOUT_US     = 400000; // 0.4 s minimum stop timeout
 
 // 4. Knob / 电位器分档
@@ -50,6 +51,7 @@ static constexpr int KNOB_HYSTERESIS_COUNTS = 50;
 // Threshold notes:
 // - Seed/kettle ON must be higher than OFF (percent of no-magnet baseline).
 // - Windmill ON must be higher than OFF (ADC counts, not percent).
+// - WINDMILL_FIXED_BASELINE_COUNTS never adapts; physical sensor offset can differ.
 // - WINDMILL_PULSES_PER_REV = real number of detected pulses per revolution.
 // - WINDMILL_MIN_TIMEOUT_US controls the minimum stop-detection delay.
 // - KNOB_ADC_MIN/MAX define usable potentiometer range; three equal sections.
@@ -69,7 +71,6 @@ static constexpr uint8_t  ADC_RESOLUTION_BITS        = 12;
 static constexpr auto     ADC_INPUT_ATTENUATION      = ADC_11db;
 static constexpr uint32_t SERIAL_STARTUP_DELAY_MS   = 500;
 static constexpr uint32_t MAIN_LOOP_YIELD_MS        = 1;
-static constexpr float   WINDMILL_BASELINE_ALPHA = 0.002f; // slow moving reference
 static constexpr float   RPM_FILTER_ALPHA        = 0.70f; // interval smoothing during steady speed/deceleration
 static constexpr float   RPM_ACCEL_ALPHA         = 0.95f; // fast response to shortening intervals
 static constexpr float   WINDMILL_STOP_PERIOD_FACTOR = 1.8f; // shorter adaptive stop timeout
@@ -120,7 +121,6 @@ struct WindmillInput {
   uint8_t rawHistoryIndex = 0;
   uint8_t consecutiveHighSamples = 0;
   float filtered = 0.0f;
-  float baseline = 0.0f;
   bool pulseHigh = false;
   bool hasPulse = false;
   bool periodValid = false;
@@ -134,16 +134,6 @@ static WindmillInput windmill;
 static uint16_t knobRaw = 0; // latest unfiltered ADC count (0..4095)
 static float knobFiltered = 0.0f;
 static uint8_t knobValue = 0;
-
-// 'd' toggles a diagnostic stream for the windmill Hall sensor.
-// Normal operation continues to use the unchanged eight-field Max/MSP frame.
-static bool windmillDebug = false;
-static uint16_t windmillRawMin = 4095;
-static uint16_t windmillRawMax = 0;
-static float windmillResponseMin = 4095.0f;
-static float windmillResponseMax = -4095.0f;
-static float windmillLastResponse = 0.0f;
-static uint32_t windmillDebugPulseCount = 0;
 
 static uint32_t lastHallSampleMs = 0;
 static uint32_t lastWheelSampleUs = 0;
@@ -176,13 +166,12 @@ static void ledError() {
 
 // -----------------------------------------------------------------------------
 // Calibration
-// Magnet-free state required for seed and kettle; do not rotate the windmill.
+// Magnet-free state required for seed/kettle; windmill uses fixed 2048.
 // Calibration pauses outgoing serial frames (about three seconds).
 // -----------------------------------------------------------------------------
 static bool calibrateSensors() {
   uint64_t seedSum = 0;
   uint64_t kettleSum = 0;
-  uint64_t wheelSum = 0;
 
   ledCalibrating(true);
   delay(CALIBRATION_SETTLE_DELAY_MS);  // Allow the user to move magnetic objects away.
@@ -193,13 +182,11 @@ static bool calibrateSensors() {
     }
     seedSum += (uint16_t)analogRead(PIN_SEED);
     kettleSum += (uint16_t)analogRead(PIN_KETTLE);
-    wheelSum += (uint16_t)analogRead(PIN_WINDMILL);
     delay(CALIBRATION_INTERVAL_MS);
   }
 
   seed.zero = (float)seedSum / CALIBRATION_SAMPLES;
   kettle.zero = (float)kettleSum / CALIBRATION_SAMPLES;
-  const float wheelZero = (float)wheelSum / CALIBRATION_SAMPLES;
 
   seed.filtered = seed.zero;
   kettle.filtered = kettle.zero;
@@ -211,13 +198,14 @@ static bool calibrateSensors() {
   kettle.active = false;
 
   windmill = WindmillInput{};
-  // Pre-fill median filter to avoid spurious pulses immediately after calibration.
-  windmill.rawHistory[0] = (uint16_t)wheelZero;
-  windmill.rawHistory[1] = (uint16_t)wheelZero;
-  windmill.rawHistory[2] = (uint16_t)wheelZero;
-  windmill.filtered = wheelZero;
-  windmill.baseline = wheelZero;
-  windmill.raw = (uint16_t)wheelZero;
+  // Experiment: fixed midpoint initializes the median and low-pass filters.
+  // Windmill Hall voltage is not measured for calibration and is never tracked.
+  const uint16_t fixedBaseline = (uint16_t)WINDMILL_FIXED_BASELINE_COUNTS;
+  windmill.rawHistory[0] = fixedBaseline;
+  windmill.rawHistory[1] = fixedBaseline;
+  windmill.rawHistory[2] = fixedBaseline;
+  windmill.filtered = WINDMILL_FIXED_BASELINE_COUNTS;
+  windmill.raw = fixedBaseline;
 
   knobRaw = (uint16_t)analogRead(PIN_KNOB);
   knobFiltered = (float)knobRaw;
@@ -230,7 +218,7 @@ static bool calibrateSensors() {
 
   // ADC readings near zero can indicate a disconnected sensor or incorrect wiring.
   const bool ok = seed.zero > HALL_ZERO_MIN_COUNTS &&
-      kettle.zero > HALL_ZERO_MIN_COUNTS && wheelZero > HALL_ZERO_MIN_COUNTS;
+      kettle.zero > HALL_ZERO_MIN_COUNTS;
   if (ok) ledReady();
   else ledError();
   return ok;
@@ -279,10 +267,9 @@ static void updateKnob() {
 }
 
 // -----------------------------------------------------------------------------
-// Windmill: positive-peak detection with a slow reference (AC-like tracking).
-// Faster sampling and filter response help catch brief magnetic pulses from a
-// sudden hand spin. Median-of-three + consecutive confirmation still reject
-// isolated ADC spikes. RPM needs at least two genuine detected pulses.
+// Windmill: positive-peak detection relative to fixed ADC midpoint (2048).
+// No dynamic baseline tracking. Median-of-three and consecutive confirmation
+// still reject isolated ADC spikes; RPM needs two genuine detected pulses.
 // -----------------------------------------------------------------------------
 static uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
   if (a > b) { const uint16_t tmp = a; a = b; b = tmp; }
@@ -293,10 +280,6 @@ static uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
 
 static void updateWindmill(uint32_t nowUs) {
   windmill.raw = (uint16_t)analogRead(PIN_WINDMILL);
-  if (windmillDebug) {
-    if (windmill.raw < windmillRawMin) windmillRawMin = windmill.raw;
-    if (windmill.raw > windmillRawMax) windmillRawMax = windmill.raw;
-  }
   windmill.rawHistory[windmill.rawHistoryIndex] = windmill.raw;
   windmill.rawHistoryIndex = (uint8_t)((windmill.rawHistoryIndex + 1) % 3);
   const uint16_t stableRaw = median3(windmill.rawHistory[0],
@@ -304,16 +287,8 @@ static void updateWindmill(uint32_t nowUs) {
                                     windmill.rawHistory[2]);
   windmill.filtered += WINDMILL_FILTER_ALPHA
       * ((float)stableRaw - windmill.filtered);
-  windmill.baseline += WINDMILL_BASELINE_ALPHA
-      * (windmill.filtered - windmill.baseline);
-
   const float response = WINDMILL_PEAK_POLARITY
-      * (windmill.filtered - windmill.baseline);
-  if (windmillDebug) {
-    windmillLastResponse = response;
-    if (response < windmillResponseMin) windmillResponseMin = response;
-    if (response > windmillResponseMax) windmillResponseMax = response;
-  }
+      * (windmill.filtered - WINDMILL_FIXED_BASELINE_COUNTS);
 
   if (windmill.pulseHigh) {
     if (response <= WINDMILL_OFF_COUNTS) {
@@ -337,7 +312,6 @@ static void updateWindmill(uint32_t nowUs) {
 
   windmill.consecutiveHighSamples = 0;
   windmill.pulseHigh = true;
-  if (windmillDebug) ++windmillDebugPulseCount;
   if (windmill.hasPulse) {
     const uint32_t elapsedUs = (uint32_t)(nowUs - windmill.lastPulseUs);
     // A pulse after a long stop starts a new measurement.
@@ -412,39 +386,6 @@ static void updateWindmillStop(uint32_t nowUs) {
 static void sendFrame(uint32_t nowUs) {
   updateWindmillStop(nowUs);
 
-  if (windmillDebug) {
-    // W raw raw_min raw_max filtered baseline response response_min
-    //   response_max pulses_since_debug_enable rotating rpm
-    // Min/max summarize all ~500 Hz samples since the previous 20 Hz frame.
-    Serial.print("W ");
-    Serial.print(windmill.raw);
-    Serial.print(' ');
-    Serial.print(windmillRawMin);
-    Serial.print(' ');
-    Serial.print(windmillRawMax);
-    Serial.print(' ');
-    Serial.print(windmill.filtered, 1);
-    Serial.print(' ');
-    Serial.print(windmill.baseline, 1);
-    Serial.print(' ');
-    Serial.print(windmillLastResponse, 1);
-    Serial.print(' ');
-    Serial.print(windmillResponseMin, 1);
-    Serial.print(' ');
-    Serial.print(windmillResponseMax, 1);
-    Serial.print(' ');
-    Serial.print(windmillDebugPulseCount);
-    Serial.print(' ');
-    Serial.print(windmill.rotating ? 1 : 0);
-    Serial.print(' ');
-    Serial.println(windmill.rpm, 1);
-    windmillRawMin = 4095;
-    windmillRawMax = 0;
-    windmillResponseMin = 4095.0f;
-    windmillResponseMax = -4095.0f;
-    return;
-  }
-
   Serial.print(seed.active ? 1 : 0);
   Serial.print(' ');
   Serial.print(kettle.active ? 1 : 0);
@@ -486,13 +427,6 @@ void loop() {
     const char command = (char)Serial.read();
     if (command == 'c' || command == 'C') {
       calibrateSensors();
-    } else if (command == 'd' || command == 'D') {
-      windmillDebug = !windmillDebug;
-      windmillDebugPulseCount = 0;
-      windmillRawMin = 4095;
-      windmillRawMax = 0;
-      windmillResponseMin = 4095.0f;
-      windmillResponseMax = -4095.0f;
     }
   }
 
@@ -516,5 +450,5 @@ void loop() {
     sendFrame(nowUs);
   }
 
-  delay(MAIN_LOOP_YIELD_MS);  // Yield to ESP32; wheel ADC target remains ~500 Hz.
+  delay(MAIN_LOOP_YIELD_MS);  // Yield to ESP32; wheel ADC target is ~1 kHz.
 }
