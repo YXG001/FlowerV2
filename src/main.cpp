@@ -366,7 +366,7 @@ static void updateWindmillStop(uint32_t nowUs) {
     windmill.rpm = 0.0f;
     windmill.hasPulse = false;
     windmill.periodValid = false;
-    // Do not reset the magnetic filter/baseline: they adapt while stopped.
+    // Keep the ADC low-pass state; the 2048 reference remains fixed.
     windmill.consecutiveHighSamples = 0;
   } else if (windmill.periodValid &&
              (float)elapsedUs > windmill.filteredPeriodUs) {
