@@ -17,54 +17,54 @@
 
 ## 编译与烧录
 
-项目使用 **PlatformIO + Arduino**，开发板环境为 \`rymcu-esp32-s3-devkitc-1\`（见 \`platformio.ini\`）。
+项目使用 **PlatformIO + Arduino**，开发板环境为 `rymcu-esp32-s3-devkitc-1`（见 `platformio.ini`）。
 
-\`\`\`bash
+```bash
 pio run
 pio run -t upload
 pio device monitor -b 115200
-\`\`\`
+```
 
 主要文件：
 
-- \`src/main.cpp\`：传感器采样、滤波、状态判断、测速和串口输出。
-- \`platformio.ini\`：编译环境与串口波特率配置。
+- `src/main.cpp`：传感器采样、滤波、状态判断、测速和串口输出。
+- `platformio.ini`：编译环境与串口波特率配置。
 
 ## 数据协议
 
 串口波特率 **115200**，每 **50 ms（20 Hz）** 输出一行，包含 **8 个空格分隔的数值**：
 
-\`\`\`text
+```text
 seed_state kettle_state windmill_state knob_value seed_value kettle_value windmill_rpm knob_raw
-\`\`\`
+```
 
 | 字段 | 含义 |
 | --- | --- |
-| \`seed_state\` | 种子接近状态，\`0/1\` |
-| \`kettle_state\` | 水壶接近状态，\`0/1\` |
-| \`windmill_state\` | 风车转动状态，\`0/1\` |
-| \`knob_value\` | 旋钮档位，\`0/1/2\` |
-| \`seed_value\` | 种子霍尔相对校准基线的变化百分比（带符号） |
-| \`kettle_value\` | 水壶霍尔相对校准基线的变化百分比（带符号） |
-| \`windmill_rpm\` | 风车转速，单位 RPM，停止后为 \`0\` |
-| \`knob_raw\` | 电位器最新一次 ADC 原始值，范围 \`0–4095\`，未经滤波 |
+| `seed_state` | 种子接近状态，`0/1` |
+| `kettle_state` | 水壶接近状态，`0/1` |
+| `windmill_state` | 风车转动状态，`0/1` |
+| `knob_value` | 旋钮档位，`0/1/2` |
+| `seed_value` | 种子霍尔相对校准基线的变化百分比（带符号） |
+| `kettle_value` | 水壶霍尔相对校准基线的变化百分比（带符号） |
+| `windmill_rpm` | 风车转速，单位 RPM，停止后为 `0` |
+| `knob_raw` | 电位器最新一次 ADC 原始值，范围 `0–4095`，未经滤波 |
 
 在 Max/MSP 中可使用：
 
-\`\`\`text
+```text
 unpack i i i i f f f i
-\`\`\`
+```
 
-旋钮档位由滤波值计算，\`knob_raw\` 则保留未经滤波的原始读数；两者变化可能不同步。
+旋钮档位由滤波值计算，`knob_raw` 则保留未经滤波的原始读数；两者变化可能不同步。
 
 ## 传感器处理
 
 ### 种子与水壶
 
 - 采样目标：**50 Hz**。
-- 采用一阶 IIR 低通滤波，系数 \`SENSOR_FILTER_ALPHA = 0.20\`。
-- 开机或重新校准时，各采样 **200 次**求平均，作为无磁铁基线 \`zero\`。
-- 连续输出：\`(filtered - zero) / zero × 100%\`；这不是距离值。
+- 采用一阶 IIR 低通滤波，系数 `SENSOR_FILTER_ALPHA = 0.20`。
+- 开机或重新校准时，各采样 **200 次**求平均，作为无磁铁基线 `zero`。
+- 连续输出：`(filtered - zero) / zero × 100%`；这不是距离值。
 - 采用变化幅度绝对值和滞回阈值判断接近状态。
 
 | 参数 | 种子 | 水壶 |
@@ -78,43 +78,43 @@ unpack i i i i f f f i
 
 | 参数 | 当前值 | 说明 |
 | --- | ---: | --- |
-| \`WINDMILL_PULSES_PER_REV\` | 3 | 每转预期的有效磁脉冲数 |
-| \`WINDMILL_PEAK_POLARITY\` | -1 | 检测 ADC **下降**方向的磁峰 |
-| \`WINDMILL_FIXED_BASELINE_COUNTS\` | 2000 | 固定 ADC 基线，不自动跟踪 |
-| \`WINDMILL_ON_COUNTS\` | 200 | 磁峰触发阈值 |
-| \`WINDMILL_OFF_COUNTS\` | 100 | 磁峰释放阈值 |
-| \`WINDMILL_SAMPLE_US\` | 1000 μs | 目标采样间隔（约 1 kHz） |
-| \`WINDMILL_FILTER_ALPHA\` | 0.50 | 磁场信号一阶 IIR 滤波系数 |
-| \`RPM_FILTER_ALPHA\` | 0.70 | 一般情况下的脉冲间隔滤波 |
-| \`RPM_ACCEL_ALPHA\` | 0.95 | 脉冲间隔缩短时快速跟踪加速 |
-| \`WINDMILL_MIN_TIMEOUT_US\` | 100000 μs | 最短停转超时（0.1 s） |
-| \`WINDMILL_STOP_PERIOD_FACTOR\` | 1.8 | 自适应停转超时的周期倍数 |
+| `WINDMILL_PULSES_PER_REV` | 3 | 每转预期的有效磁脉冲数 |
+| `WINDMILL_PEAK_POLARITY` | -1 | 检测 ADC **下降**方向的磁峰 |
+| `WINDMILL_FIXED_BASELINE_COUNTS` | 2000 | 固定 ADC 基线，不自动跟踪 |
+| `WINDMILL_ON_COUNTS` | 200 | 磁峰触发阈值 |
+| `WINDMILL_OFF_COUNTS` | 100 | 磁峰释放阈值 |
+| `WINDMILL_SAMPLE_US` | 1000 μs | 目标采样间隔（约 1 kHz） |
+| `WINDMILL_FILTER_ALPHA` | 0.50 | 磁场信号一阶 IIR 滤波系数 |
+| `RPM_FILTER_ALPHA` | 0.70 | 一般情况下的脉冲间隔滤波 |
+| `RPM_ACCEL_ALPHA` | 0.95 | 脉冲间隔缩短时快速跟踪加速 |
+| `WINDMILL_MIN_TIMEOUT_US` | 100000 μs | 最短停转超时（0.1 s） |
+| `WINDMILL_STOP_PERIOD_FACTOR` | 1.8 | 自适应停转超时的周期倍数 |
 
 检测流程：**3 点中值滤波 → IIR 滤波 → 相对于固定 2000 基线计算磁峰 → 滞回与连续 2 次采样确认 → 脉冲间隔计算 RPM**。有效脉冲之间另有 **8 ms** 最小间隔约束。
 
 对于当前负向磁峰设置，检测响应为：
 
-\`\`\`text
+```text
 response = 2000 - filtered_adc
-\`\`\`
+```
 
 即滤波后 ADC 低于约 **1800** 才会达到触发阈值；回升至约 **1900** 时满足释放条件。实际触发仍受滤波和连续采样确认影响。
 
-收到**两次有效脉冲**并取得间隔后，才将 \`windmill_state\` 设为 \`1\` 并计算 RPM。运行中按约 **1.8 倍滤波脉冲周期**判断停转，下限 **0.1 s**、上限 **20 s**；首次脉冲后尚未取得周期时，超时为 **8 s**。未收到后续脉冲时，RPM 会根据等待时间逐渐下调，超时后归零。
+收到**两次有效脉冲**并取得间隔后，才将 `windmill_state` 设为 `1` 并计算 RPM。运行中按约 **1.8 倍滤波脉冲周期**判断停转，下限 **0.1 s**、上限 **20 s**；首次脉冲后尚未取得周期时，超时为 **8 s**。未收到后续脉冲时，RPM 会根据等待时间逐渐下调，超时后归零。
 
 ### 旋钮
 
 - 采样目标：**50 Hz**，一阶 IIR 滤波系数 **0.20**。
-- 将滤波后的 ADC 范围 \`0–4095\` 等分为 **0、1、2** 三档。
+- 将滤波后的 ADC 范围 `0–4095` 等分为 **0、1、2** 三档。
 - 档位边界设有 **50 counts** 滞回量。
-- 第八字段 \`knob_raw\` 始终输出未经滤波的 ADC 读数。
+- 第八字段 `knob_raw` 始终输出未经滤波的 ADC 读数。
 
 ## 校准与使用注意
 
 启动时先等待约 **1 秒**，然后对**种子和水壶**进行约 **2 秒**的 ADC 基线采样。此时应移开对应磁铁。
 
-向串口发送 \`c\` 或 \`C\` 可重新执行校准。此操作还会清零风车脉冲与 RPM 状态，并重新初始化旋钮滤波器；校准期间暂停串口数据输出。
+向串口发送 `c` 或 `C` 可重新执行校准。此操作还会清零风车脉冲与 RPM 状态，并重新初始化旋钮滤波器；校准期间暂停串口数据输出。
 
-**风车不参与静态基线采样**，始终使用固定值 **2000**；当前固件**没有 \`d/D\` 诊断模式**。
+**风车不参与静态基线采样**，始终使用固定值 **2000**；当前固件**没有 `d/D` 诊断模式**。
 
-传感器实际零点、磁铁极性、磁峰强度和安装间距会影响触发效果。调整配置时请以 \`src/main.cpp\` 的 **USER CONFIGURATION** 区域及实物测量为准，尤其应确认三颗磁铁每转确实形成三个有效脉冲。
+传感器实际零点、磁铁极性、磁峰强度和安装间距会影响触发效果。调整配置时请以 `src/main.cpp` 的 **USER CONFIGURATION** 区域及实物测量为准，尤其应确认三颗磁铁每转确实形成三个有效脉冲。
